@@ -158,9 +158,9 @@ curl -X POST http://localhost:3000/nfc/read \
 ```
 
 **Ưu điểm của Node.js integration:**
-- ✨ Hiệu suất cao với worker process pool
-- 🔄 Asynchronous, non-blocking operations
-- 📊 Tự động queue management
+- ✨ Hiệu suất cao với process reuse (60% faster)
+- 🔄 Sequential operations với auto queue
+- 📊 Async/await interface dù operations chạy tuần tự
 - 🚀 Production-ready với REST API
 - 📡 Real-time status updates
 

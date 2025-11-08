@@ -13,9 +13,7 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 
 // Initialize NFC Manager
-const nfcManager = new NFCManager({
-  poolSize: 1 // Single NFC reader
-});
+const nfcManager = new NFCManager();
 
 let serverReady = false;
 

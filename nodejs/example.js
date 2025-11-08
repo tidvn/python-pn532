@@ -6,9 +6,7 @@ const NFCManager = require('./nfc-manager');
 
 async function main() {
   // Create NFC Manager instance
-  const nfcManager = new NFCManager({
-    poolSize: 1 // 1 worker for single NFC reader
-  });
+  const nfcManager = new NFCManager();
 
   // Listen to status events
   nfcManager.on('status', (status) => {

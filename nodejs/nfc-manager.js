@@ -1,28 +1,36 @@
 /**
- * NFC Manager - High Performance Worker Pool for Python NFC Operations
- * Manages Python worker processes with connection pooling for optimal performance
+ * NFC Manager - Sequential Worker for Python NFC Operations
+ * Manages a single Python worker process with sequential operation queue
+ *
+ * Since there's only one PN532 module, all operations must be sequential.
+ * This manager ensures operations are queued and executed one at a time.
  */
 
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
 const path = require('path');
 
-class NFCWorker extends EventEmitter {
-  constructor(scriptPath) {
+class NFCManager extends EventEmitter {
+  constructor(options = {}) {
     super();
-    this.scriptPath = scriptPath;
+    this.scriptPath = options.scriptPath || path.join(__dirname, '../nfc_worker.py');
     this.process = null;
     this.ready = false;
     this.busy = false;
-    this.currentCallback = null;
+    this.initialized = false;
     this.buffer = '';
+    this.queue = [];
+    this.currentCallback = null;
   }
 
   /**
-   * Start the Python worker process
+   * Initialize the NFC Manager and start Python worker
    */
-  start() {
+  async init() {
+    console.log('Initializing NFC Manager...');
+
     return new Promise((resolve, reject) => {
+      // Spawn Python worker process
       this.process = spawn('python3', [this.scriptPath], {
         stdio: ['pipe', 'pipe', 'pipe']
       });
@@ -55,7 +63,14 @@ class NFCWorker extends EventEmitter {
       this.process.on('exit', (code) => {
         console.log(`Worker process exited with code ${code}`);
         this.ready = false;
+        this.initialized = false;
         this.emit('exit', code);
+
+        // Reject all queued requests
+        while (this.queue.length > 0) {
+          const queued = this.queue.shift();
+          queued.reject(new Error('Worker process terminated'));
+        }
       });
 
       // Handle process error
@@ -66,11 +81,13 @@ class NFCWorker extends EventEmitter {
 
       // Wait for ready status
       const readyTimeout = setTimeout(() => {
-        reject(new Error('Worker initialization timeout'));
+        reject(new Error('Worker initialization timeout (10s)'));
       }, 10000);
 
       this.once('ready', () => {
         clearTimeout(readyTimeout);
+        this.initialized = true;
+        console.log('NFC Manager initialized successfully');
         resolve();
       });
     });
@@ -98,107 +115,49 @@ class NFCWorker extends EventEmitter {
       this.busy = false;
 
       if (response.success) {
-        callback(null, response.data);
+        callback.resolve(response.data);
       } else {
-        callback(new Error(response.error || 'Unknown error'));
+        callback.reject(new Error(response.error || 'Unknown error'));
       }
+
+      // Process next queued request
+      this.processQueue();
     }
   }
 
   /**
-   * Send command to Python worker
+   * Process the next request in queue
    */
-  sendCommand(action, params = {}) {
-    return new Promise((resolve, reject) => {
-      if (!this.ready) {
-        return reject(new Error('Worker not ready'));
-      }
-
-      if (this.busy) {
-        return reject(new Error('Worker is busy'));
-      }
-
-      this.busy = true;
-      this.currentCallback = (error, data) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(data);
-        }
-      };
-
-      const command = JSON.stringify({ action, params }) + '\n';
-      this.process.stdin.write(command);
-    });
-  }
-
-  /**
-   * Check if worker is available
-   */
-  isAvailable() {
-    return this.ready && !this.busy;
-  }
-
-  /**
-   * Terminate the worker process
-   */
-  terminate() {
-    if (this.process) {
-      this.process.kill();
-    }
-  }
-}
-
-class NFCManager extends EventEmitter {
-  constructor(options = {}) {
-    super();
-    this.poolSize = options.poolSize || 1; // Usually 1 for NFC (single reader)
-    this.scriptPath = options.scriptPath || path.join(__dirname, '../nfc_worker.py');
-    this.workers = [];
-    this.queue = [];
-    this.initialized = false;
-  }
-
-  /**
-   * Initialize the worker pool
-   */
-  async init() {
-    console.log(`Initializing NFC Manager with ${this.poolSize} worker(s)...`);
-
-    const workerPromises = [];
-    for (let i = 0; i < this.poolSize; i++) {
-      const worker = new NFCWorker(this.scriptPath);
-
-      worker.on('status', (status) => {
-        this.emit('status', { workerId: i, ...status });
-      });
-
-      worker.on('exit', () => {
-        // Remove dead worker from pool
-        const index = this.workers.indexOf(worker);
-        if (index > -1) {
-          this.workers.splice(index, 1);
-        }
-      });
-
-      this.workers.push(worker);
-      workerPromises.push(worker.start());
+  processQueue() {
+    if (this.queue.length === 0 || this.busy || !this.ready) {
+      return;
     }
 
-    await Promise.all(workerPromises);
-    this.initialized = true;
-    console.log('NFC Manager initialized successfully');
+    const queued = this.queue.shift();
+    this.executeCommand(queued.action, queued.params, queued.resolve, queued.reject);
   }
 
   /**
-   * Get an available worker from the pool
+   * Execute a command (internal method)
    */
-  getAvailableWorker() {
-    return this.workers.find(worker => worker.isAvailable());
+  executeCommand(action, params, resolve, reject) {
+    if (!this.ready) {
+      return reject(new Error('Worker not ready'));
+    }
+
+    if (this.busy) {
+      return reject(new Error('Worker is busy (this should not happen)'));
+    }
+
+    this.busy = true;
+    this.currentCallback = { resolve, reject };
+
+    const command = JSON.stringify({ action, params }) + '\n';
+    this.process.stdin.write(command);
   }
 
   /**
-   * Execute a command on an available worker
+   * Execute a command (public method with queuing)
    */
   async execute(action, params = {}) {
     if (!this.initialized) {
@@ -206,37 +165,19 @@ class NFCManager extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const tryExecute = () => {
-        const worker = this.getAvailableWorker();
-
-        if (worker) {
-          worker.sendCommand(action, params)
-            .then(resolve)
-            .catch(reject);
-        } else {
-          // Queue the request
-          this.queue.push({ action, params, resolve, reject });
-        }
-      };
-
-      tryExecute();
-
-      // Process queue when workers become available
-      this.workers.forEach(worker => {
-        worker.on('status', () => {
-          if (worker.isAvailable() && this.queue.length > 0) {
-            const queued = this.queue.shift();
-            worker.sendCommand(queued.action, queued.params)
-              .then(queued.resolve)
-              .catch(queued.reject);
-          }
-        });
-      });
+      // If worker is available, execute immediately
+      if (this.ready && !this.busy) {
+        this.executeCommand(action, params, resolve, reject);
+      } else {
+        // Otherwise, queue the request
+        this.queue.push({ action, params, resolve, reject });
+      }
     });
   }
 
   /**
    * Write JSON data to NFC card
+   * Operations are queued and executed sequentially
    */
   async write(data, options = {}) {
     return this.execute('write', {
@@ -248,6 +189,7 @@ class NFCManager extends EventEmitter {
 
   /**
    * Read JSON data from NFC card
+   * Operations are queued and executed sequentially
    */
   async read(options = {}) {
     return this.execute('read', {
@@ -259,6 +201,7 @@ class NFCManager extends EventEmitter {
 
   /**
    * Format NFC card
+   * Operations are queued and executed sequentially
    */
   async format(options = {}) {
     return this.execute('format', {
@@ -268,12 +211,36 @@ class NFCManager extends EventEmitter {
   }
 
   /**
-   * Shutdown the manager and all workers
+   * Get queue status
+   */
+  getStatus() {
+    return {
+      ready: this.ready,
+      busy: this.busy,
+      queueLength: this.queue.length,
+      initialized: this.initialized
+    };
+  }
+
+  /**
+   * Shutdown the manager and worker
    */
   shutdown() {
     console.log('Shutting down NFC Manager...');
-    this.workers.forEach(worker => worker.terminate());
-    this.workers = [];
+
+    // Reject all queued requests
+    while (this.queue.length > 0) {
+      const queued = this.queue.shift();
+      queued.reject(new Error('NFC Manager shutting down'));
+    }
+
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
+
+    this.ready = false;
+    this.busy = false;
     this.initialized = false;
   }
 }

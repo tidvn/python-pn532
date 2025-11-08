@@ -13,11 +13,12 @@ Tài liệu chi tiết về cách Python và Node.js giao tiếp với nhau tron
 │  └────────────────────┬──────────────────────────────┘  │
 │                       │                                  │
 │  ┌────────────────────▼──────────────────────────────┐  │
-│  │             NFC Manager (Pool)                     │  │
-│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐    │  │
-│  │  │ Worker 1   │ │ Worker 2   │ │ Worker N   │    │  │
-│  │  └────────────┘ └────────────┘ └────────────┘    │  │
-│  │           Queue: [Task1, Task2, Task3...]         │  │
+│  │             NFC Manager                            │  │
+│  │  ┌──────────────────────────────────────────────┐ │  │
+│  │  │  Single Python Worker                        │ │  │
+│  │  │  Queue: [Task1, Task2, Task3...]             │ │  │
+│  │  │  (Sequential execution)                      │ │  │
+│  │  └──────────────────────────────────────────────┘ │  │
 │  └────────────────────┬──────────────────────────────┘  │
 └─────────────────────────┬──────────────────────────────┘
                           │ stdin/stdout (JSON)
@@ -115,33 +116,36 @@ Response:
    └─→ Python process terminates
 ```
 
-## Worker Pool Management
+## Sequential Queue Management
 
-### Pool Configuration
+### Single Worker Design
 
 ```javascript
-const nfcManager = new NFCManager({
-  poolSize: 1  // Thường là 1 cho single NFC reader
-});
+const nfcManager = new NFCManager();
 ```
 
-**Lý do poolSize = 1:**
-- Mỗi PN532 reader cần 1 worker
-- Không thể đọc 2 thẻ cùng lúc trên 1 reader
-- Nếu có nhiều readers, tăng poolSize tương ứng
+**Tại sao chỉ 1 worker:**
+- Chỉ có 1 module PN532
+- Không thể đọc/ghi 2 thẻ cùng lúc
+- Operations phải chạy tuần tự để tránh conflict
 
 ### Queue System
 
-Khi tất cả workers đều busy:
-1. Request được thêm vào queue
-2. Khi worker hoàn thành task, tự động lấy task tiếp theo từ queue
+Khi worker đang busy:
+1. Request mới được thêm vào queue
+2. Khi operation hiện tại hoàn thành, tự động lấy request tiếp theo từ queue
 3. FIFO (First In First Out) ordering
+4. Node.js code vẫn async/await nhưng Python operations chạy tuần tự
 
 ```javascript
-Queue: [Write(data1), Read(), Write(data2)]
-         ↓ (worker available)
 Processing: Write(data1)
 Queue: [Read(), Write(data2)]
+         ↓ (Write(data1) completes)
+Processing: Read()
+Queue: [Write(data2)]
+         ↓ (Read() completes)
+Processing: Write(data2)
+Queue: []
 ```
 
 ## Performance Optimizations
@@ -158,16 +162,16 @@ Worker Pool: ~2s per operation (sau init)
 Improvement: 60% faster
 ```
 
-### 2. Connection Pooling
+### 2. Process Reuse
 ```javascript
 // Bad: Khởi tạo lại mỗi lần
-spawn('python3', ['write.py'])  // 5s
-spawn('python3', ['read.py'])   // 5s
+spawn('python3', ['write.py'])  // 5s (spawn + init PN532 + write)
+spawn('python3', ['read.py'])   // 5s (spawn + init PN532 + read)
 Total: 10s
 
-// Good: Reuse worker
-worker.sendCommand('write')     // 2s
-worker.sendCommand('read')      // 2s
+// Good: Reuse single worker
+nfcManager.write(data)          // 2s (write only, PN532 already init)
+nfcManager.read()               // 2s (read only, PN532 already init)
 Total: 4s
 ```
 
@@ -370,40 +374,54 @@ setInterval(() => {
 
 ## Scaling Considerations
 
-### Horizontal Scaling
-Nếu cần xử lý nhiều NFC readers:
+### Multiple NFC Readers
+Nếu cần xử lý nhiều PN532 readers cùng lúc:
 
 ```javascript
-// Multiple readers setup
+// Multiple readers setup (mỗi reader = 1 manager)
 const reader1 = new NFCManager({
-  poolSize: 1,
-  scriptPath: './worker1.py'  // Reader 1
+  scriptPath: './worker1.py'  // PN532 Reader 1
 });
 
 const reader2 = new NFCManager({
-  poolSize: 1,
-  scriptPath: './worker2.py'  // Reader 2
+  scriptPath: './worker2.py'  // PN532 Reader 2
 });
+
+await Promise.all([
+  reader1.init(),
+  reader2.init()
+]);
+
+// Có thể xử lý parallel trên 2 readers khác nhau
+await Promise.all([
+  reader1.write(data1),  // Reader 1
+  reader2.write(data2)   // Reader 2
+]);
 ```
 
 ### Load Balancing
 ```javascript
-// Round-robin between multiple managers
-const managers = [manager1, manager2, manager3];
+// Round-robin giữa multiple readers
+const readers = [reader1, reader2, reader3];
 let currentIndex = 0;
 
-function getNextManager() {
-  const manager = managers[currentIndex];
-  currentIndex = (currentIndex + 1) % managers.length;
-  return manager;
+function getNextReader() {
+  const reader = readers[currentIndex];
+  currentIndex = (currentIndex + 1) % readers.length;
+  return reader;
 }
+
+// Distribute load
+await getNextReader().write(data1);
+await getNextReader().write(data2);
 ```
 
 ## Summary
 
-- **Architecture:** Node.js ↔ stdin/stdout ↔ Python
-- **Performance:** ~60% faster với worker reuse
-- **Scalability:** Queue system + process pooling
+- **Architecture:** Node.js ↔ stdin/stdout ↔ Python (single worker)
+- **Sequential Execution:** Operations chạy tuần tự (vì 1 PN532)
+- **Performance:** ~60% faster với process reuse
+- **Queue System:** Tự động queue + FIFO processing
 - **Reliability:** Error handling + graceful shutdown
 - **Security:** Input validation + process isolation
 
