@@ -38,10 +38,18 @@ python example/simpletest.py
 ```
 .
 ├── nfc.py                  # Main library with core functions
+├── nfc_worker.py           # Worker process for Node.js integration
 ├── write_to_nfc.py         # Script to write JSON data to NFC card
 ├── read_from_nfc.py        # Script to read JSON data from NFC card
 ├── format_nfc.py           # Script to format/clear NFC card
 ├── requirements.txt        # Python dependencies
+├── nodejs/                 # Node.js integration
+│   ├── nfc-manager.js      # High-performance worker pool manager
+│   ├── server.js           # Express.js REST API server
+│   ├── example.js          # Direct usage example
+│   ├── test-api.sh         # API test script
+│   ├── package.json        # Node.js dependencies
+│   └── README.md           # Node.js documentation
 └── example/                # Example scripts from Adafruit
     ├── readwrite_mifare.py
     ├── simpletest.py
@@ -50,7 +58,9 @@ python example/simpletest.py
 
 ## Usage
 
-### 1. Write JSON Data to NFC Card
+### Python Direct Usage
+
+#### 1. Write JSON Data to NFC Card
 
 Edit `write_to_nfc.py` to customize your data:
 
@@ -68,7 +78,7 @@ Then run:
 python write_to_nfc.py
 ```
 
-### 2. Read JSON Data from NFC Card
+#### 2. Read JSON Data from NFC Card
 
 ```bash
 python read_from_nfc.py
@@ -87,12 +97,74 @@ JSON data: {"name": "Tiến Dũng", "id": 12345, "email": "john@example.com", "a
   active: True
 ```
 
-### 3. Format/Clear NFC Card
+#### 3. Format/Clear NFC Card
 
 To erase all data on the card:
 ```bash
 python format_nfc.py
 ```
+
+### Node.js Integration (Recommended for Production)
+
+Giải pháp hiệu suất cao sử dụng worker process pool để giao tiếp giữa Node.js và Python.
+
+#### Quick Start
+
+1. **Cài đặt dependencies:**
+
+```bash
+cd nodejs
+npm install
+```
+
+2. **Sử dụng trực tiếp trong Node.js:**
+
+```javascript
+const NFCManager = require('./nodejs/nfc-manager');
+
+const nfcManager = new NFCManager();
+await nfcManager.init();
+
+// Write
+await nfcManager.write({
+  name: 'Tiến Dũng',
+  id: 12345
+});
+
+// Read
+const data = await nfcManager.read();
+console.log(data);
+```
+
+3. **Hoặc chạy REST API Server:**
+
+```bash
+cd nodejs
+node server.js
+```
+
+**API Examples:**
+
+```bash
+# Write to NFC
+curl -X POST http://localhost:3000/nfc/write \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"name": "Tiến Dũng", "id": 12345}}'
+
+# Read from NFC
+curl -X POST http://localhost:3000/nfc/read \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Ưu điểm của Node.js integration:**
+- ✨ Hiệu suất cao với worker process pool
+- 🔄 Asynchronous, non-blocking operations
+- 📊 Tự động queue management
+- 🚀 Production-ready với REST API
+- 📡 Real-time status updates
+
+👉 **Xem [nodejs/README.md](nodejs/README.md) để biết chi tiết đầy đủ**
 
 ## Library Functions
 

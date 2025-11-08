@@ -1,0 +1,22 @@
+{
+  "name": "nfc-nodejs-worker",
+  "version": "1.0.0",
+  "description": "High-performance Node.js NFC manager using Python workers",
+  "main": "nfc-manager.js",
+  "scripts": {
+    "test": "node example.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "nfc",
+    "pn532",
+    "worker",
+    "python",
+    "nodejs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
